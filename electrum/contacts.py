@@ -101,6 +101,11 @@ class Contacts(dict, Logger):
                 }
         if openalias := await self.resolve_openalias(k):
             return openalias
+        name = str(k).strip()
+        if name.lower().endswith('.dntls'):
+            from .plugin import run_hook
+            if resolved := await asyncio.to_thread(run_hook, 'resolve_dntls', name):
+                return resolved
         raise AliasNotFoundException("Invalid Bitcoin address or alias", k)
 
     @classmethod

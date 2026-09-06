@@ -1,0 +1,6 @@
+{
+  "name": "dntls",
+  "fullname": "DNTLS names",
+  "description": "Pay DNTLS names and publish this wallet's address on your DNTLS identity through the Local Trust Resolver.",
+  "available_for": ["qt"]
+}
