@@ -60,6 +60,9 @@ info "Building $pkgname..."
                 --with-x=no \
                 --enable-video=no \
                 --with-jpeg=no"
+            # qrdectxt.c calls iconv; SDKs newer than macOS 11 no longer link
+            # libiconv implicitly, so name it (needed on the macos-14 runners).
+            export LIBS="${LIBS:-} -liconv"
         else
             # linux target
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \
