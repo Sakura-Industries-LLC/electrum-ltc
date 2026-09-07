@@ -1,0 +1,368 @@
+name: DNTLS Release
+
+# Publishes the DNTLS build of Electrum-LTC (bundle id net.dntls.electrum-ltc)
+# from this fork. Upstream has no release workflow: its macOS builds are made on
+# a maintainer's machine with contrib/osx/make_osx.sh and signed by hand, so
+# this workflow drives those same scripts with the org's Apple credentials.
+#
+# macOS only, and Apple silicon only: the wallet's DNTLS plugin talks to the
+# Local Trust Resolver over its Unix socket, and the resolver has no Windows
+# build; the runner image for macOS x86_64 is retired.
+#
+# The Local Trust Resolver identifies the shipped app by its code-signing
+# subject (Team ID 7MN6B2QY4W + identifier net.dntls.electrum-ltc) plus the
+# attestation marker committed at contrib/dntls/attestation.marker, which
+# contrib/osx/make_osx.sh compiles into the PyInstaller bootloader. CI holds no
+# DNTLS key, so the marker cannot be minted here; it is verified instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, for example 0.1.0 (ignored on a tag ref)
+        required: false
+        type: string
+      publish:
+        description: Publish to the Portal download bucket (needs a tag ref)
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      # <component>/vX.Y.Z: the release suite derives the version from the tag's
+      # last segment and publishes under electrum-ltc-dntls/vX.Y.Z. Prereleases
+      # are refused by the publisher, so rehearse with a dispatch instead.
+      - 'electrum-dntls/v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dntls-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
+            version="${GITHUB_REF_NAME#electrum-dntls/v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$version'. Expected semver, for example 0.1.0."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=electrum-dntls/v${version}" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS (arm64)
+    needs: setup
+    runs-on: macos-14
+    # The build compiles the PyInstaller bootloader, libsecp256k1, zbar, libusb
+    # and mwebd, installs a python.org interpreter, and waits on Apple's notary
+    # service twice.
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
+      APP: dist/Electrum-LTC.app
+      # make_osx.sh installs CPython 3.12.10 from python.org and then insists
+      # that "python3" is that interpreter; the runner's own python3 would win
+      # the PATH otherwise.
+      PATH_PREFIX: /Library/Frameworks/Python.framework/Versions/3.12/bin
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Pin the build version
+        run: |
+          set -euo pipefail
+          # make_osx.sh and sign_osx.sh both take the version from
+          # `git describe --tags --always`, which would hand back
+          # "electrum-dntls/v1.2.3" here: a slash in the .app version and in the
+          # .dmg path. One plain tag on HEAD makes both scripts deterministic.
+          for tag in $(git tag -l); do git tag -d "$tag" >/dev/null; done
+          git tag "$VERSION"
+          test "$(git describe --tags --always)" = "$VERSION"
+
+      # dntls-testnet-sdk lives in the private dntls-testnet repository; the
+      # Sakura Release app mints a read-only token for that one repository.
+      - name: Create dntls-testnet read token
+        id: dntls-testnet
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SAKURA_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SAKURA_RELEASE_APP_PRIVATE_KEY }}
+          owner: Sakura-Industries-LLC
+          repositories: dntls-testnet
+          permission-contents: read
+
+      # notarytool reads the App Store Connect key from a file. The secret holds
+      # the .p8 base64-encoded, the way GoReleaser wants it in the sibling repos.
+      - name: Stage the notary API key
+        id: notary
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_path="${RUNNER_TEMP}/notary-key.p8"
+          if [[ "$MACOS_NOTARY_KEY" == -----BEGIN* ]]; then
+            printf '%s\n' "$MACOS_NOTARY_KEY" > "$key_path"
+          else
+            printf '%s' "$MACOS_NOTARY_KEY" | base64 -d > "$key_path"
+          fi
+          openssl pkey -in "$key_path" -noout
+          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Import the signing certificate
+        id: keychain
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keychain="${RUNNER_TEMP}/dntls-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          p12="${RUNNER_TEMP}/sign.p12"
+          printf '%s' "$MACOS_SIGN_P12" | base64 -d > "$p12"
+
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$MACOS_SIGN_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$p12"
+          # Without a partition list, codesign blocks on a UI prompt nobody can
+          # answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" > /dev/null
+          # codesign resolves the identity through the user's search list.
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '" ')
+
+          identities="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(.*\)".*/\1/p')"
+          identity="${identities%%$'\n'*}"
+          if [[ -z "$identity" ]]; then
+            echo '::error::No valid code-signing identity in MACOS_SIGN_P12.'
+            exit 1
+          fi
+          echo "Signing identity: $identity"
+          {
+            echo "keychain=$keychain"
+            echo "identity=$identity"
+            echo "password=$password"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the app
+        env:
+          # make_osx.sh installs the SDK from git at the commit pinned in
+          # contrib/dntls/sdk-commit.txt.
+          DNTLS_SDK_TOKEN: ${{ steps.dntls-testnet.outputs.token }}
+        run: |
+          set -euo pipefail
+          export PATH="${PATH_PREFIX}:${PATH}"
+          ./contrib/osx/make_osx.sh
+
+      - name: Sign the app
+        env:
+          CODESIGN_CERT: ${{ steps.keychain.outputs.identity }}
+          CODESIGN_KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          CODESIGN_KEYCHAIN_PASSWORD: ${{ steps.keychain.outputs.password }}
+        run: |
+          set -euo pipefail
+          ./contrib/osx/sign_osx.sh
+          # sign_osx.sh also builds a .dmg, from an app that is not stapled yet.
+          # The shipped image is built further down, once the ticket is attached.
+          rm -f dist/*.dmg
+
+      - name: Notarize and staple the app
+        env:
+          NOTARY_KEY: ${{ steps.notary.outputs.key_path }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          zip="${RUNNER_TEMP}/Electrum-LTC.zip"
+          ditto -c -k --keepParent "$APP" "$zip"
+          xcrun notarytool submit "$zip" \
+            --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 45m
+          rm -f "$zip"
+          xcrun stapler staple "$APP"
+
+      # A signing change or a duplicated marker would leave the shipped app
+      # unable to identify itself to the Local Trust Resolver, which is a silent
+      # failure for the user, so both are checked before anything is uploaded.
+      - name: Verify the signed app
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          # One capture, then match: grep -q would close the pipe under
+          # `set -o pipefail`.
+          signature="$(codesign -dv --verbose=2 "$APP" 2>&1)"
+          grep -qx 'Identifier=net.dntls.electrum-ltc' <<< "$signature"
+          grep -qx 'TeamIdentifier=7MN6B2QY4W' <<< "$signature"
+          spctl --assess --type execute --verbose=4 "$APP"
+          xcrun stapler validate "$APP"
+
+          exe="${APP}/Contents/MacOS/Electrum-LTC"
+          test -f "$exe" || { echo "::error::${exe} is missing"; exit 1; }
+          markers="$(grep -o --binary-files=text 'DNTLS-ATTEST-BEGIN' "$exe" | wc -l | tr -d ' ')"
+          if [[ "$markers" != "1" ]]; then
+            echo "::error::Expected exactly one DNTLS attestation marker in the main executable, found ${markers}."
+            exit 1
+          fi
+          grep -q --binary-files=text -F "$(tr -d '\n' < contrib/dntls/attestation.marker)" "$exe"
+          elsewhere="$(grep -rl --binary-files=text 'DNTLS-ATTEST-BEGIN' "$APP" | grep -vx "$exe" || true)"
+          if [[ -n "$elsewhere" ]]; then
+            echo "::error::DNTLS attestation marker also appears in: ${elsewhere}"
+            exit 1
+          fi
+
+      - name: Build, sign and notarize the disk image
+        env:
+          CODESIGN_CERT: ${{ steps.keychain.outputs.identity }}
+          NOTARY_KEY: ${{ steps.notary.outputs.key_path }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          dmg="dist/electrum-ltc-dntls_${VERSION}_macos_arm64.dmg"
+          # Same image format upstream's contrib/osx/sign_osx.sh produces.
+          hdiutil create -fs HFS+ -volname Electrum-LTC -srcfolder "$APP" "$dmg"
+          codesign -f -v -s "$CODESIGN_CERT" "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 45m
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          shasum -a 256 "$dmg"
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-dmg
+          path: dist/electrum-ltc-dntls_*.dmg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Remove the signing material
+        if: always()
+        env:
+          KEY_PATH: ${{ steps.notary.outputs.key_path }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: |
+          rm -f "${KEY_PATH}" "${RUNNER_TEMP}/sign.p12"
+          if [[ -n "$KEYCHAIN" ]]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+
+  # The Portal's Downloads page serves signed-in testnet users from the private
+  # release bucket, keyed <project>/<tag>/<asset>. The publisher verifies a
+  # closed bundle: the payloads listed in checksums.txt, plus checksums.txt and
+  # its keyless Sigstore signature, and nothing else.
+  release-assets:
+    name: Release assets for the object store
+    needs: [setup, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # cosign signs the checksums with the workflow's OIDC identity.
+      id-token: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Download the disk image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-dmg
+          path: dist
+
+      - name: Assemble the closed bundle
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob dotglob
+          expected="electrum-ltc-dntls_${VERSION}_macos_arm64.dmg"
+          if [[ ! -f "$expected" ]]; then
+            echo "::error::Missing ${expected}; the macOS job produced: $(printf '%s ' *)"
+            exit 1
+          fi
+          for found in *; do
+            if [[ "$found" != "$expected" ]]; then
+              echo "::error::Unexpected file in the bundle: ${found}"
+              exit 1
+            fi
+          done
+          sha256sum -- * | LC_ALL=C sort -k2 > checksums.txt
+          cat checksums.txt
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the checksums
+        run: cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
+
+      - name: Upload the authoritative release assets
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            dist/electrum-ltc-dntls_*
+            dist/checksums.txt
+            dist/checksums.txt.sigstore.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish to the Portal download bucket
+    needs: [release-assets]
+    # The publisher refuses a non-tag ref, so a dispatch rehearsal leaves this
+    # job out. To exercise it without uploading, dispatch from a tag ref with
+    # publish unset: the bundle is verified and nothing is written.
+    if: ${{ inputs.publish || github.ref_type == 'tag' }}
+    permissions:
+      actions: read
+      contents: read
+    uses: Sakura-Industries-LLC/release/.github/workflows/publish-object-store.yml@7a85b3de6e0971e711317b3d1d13337f1ea9cfea
+    with:
+      artifact-id: ${{ needs.release-assets.outputs.artifact-id }}
+      artifact-digest: ${{ needs.release-assets.outputs.artifact-digest }}
+      checksum-signing-workflow-ref: Sakura-Industries-LLC/electrum-ltc/.github/workflows/dntls-release.yml@${{ github.ref }}
+      project: electrum-ltc-dntls
+      endpoint: https://objects.dntls.net
+      bucket: releases
+      region: garage
+      publish-object-store: ${{ inputs.publish || github.ref_type == 'tag' }}
+    secrets:
+      object-store-access-key-id: ${{ secrets.OBJECT_STORE_ACCESS_KEY_ID }}
+      object-store-secret-access-key: ${{ secrets.OBJECT_STORE_SECRET_ACCESS_KEY }}

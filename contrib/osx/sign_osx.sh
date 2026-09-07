@@ -2,7 +2,15 @@
 
 set -e
 
-security -v unlock-keychain login.keychain
+# DNTLS: CI signs from a throwaway keychain it creates and deletes around this
+# script. The name "login.keychain" is special-cased by the Security framework
+# and cannot be unlocked with a password, so a keychain of our own has to be
+# named explicitly. A developer's machine keeps the upstream behaviour.
+if [ -n "$CODESIGN_KEYCHAIN" ]; then
+    security -v unlock-keychain -p "$CODESIGN_KEYCHAIN_PASSWORD" "$CODESIGN_KEYCHAIN"
+else
+    security -v unlock-keychain login.keychain
+fi
 
 
 PACKAGE=Electrum-LTC

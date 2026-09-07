@@ -33,6 +33,38 @@ which brew > /dev/null 2>&1 || fail "Please install brew from https://brew.sh/ t
 which xcodebuild > /dev/null 2>&1 || fail "Please install xcode command line tools to continue"
 
 
+# DNTLS: the Local Trust Resolver identifies this build by its code-signing
+# subject (Team ID + identifier) together with the attestation marker that gets
+# compiled into the PyInstaller bootloader below, and the "dntls" plugin needs
+# the DNTLS Python SDK inside the bundle. Resolve both now, so a misconfigured
+# build fails in seconds instead of after the compile.
+DNTLS_MARKER_FILE="$CONTRIB/dntls/attestation.marker"
+[ -f "$DNTLS_MARKER_FILE" ] || fail "Missing attestation marker: $DNTLS_MARKER_FILE"
+DNTLS_MARKER_LINES="$(grep -c '' "$DNTLS_MARKER_FILE" || true)"
+[ "$DNTLS_MARKER_LINES" = "1" ] \
+    || fail "$DNTLS_MARKER_FILE must hold exactly one line, found $DNTLS_MARKER_LINES"
+DNTLS_MARKER="$(tr -d '\n' < "$DNTLS_MARKER_FILE")"
+case "$DNTLS_MARKER" in
+    DNTLS-ATTEST-BEGIN*DNTLS-ATTEST-END) ;;
+    *) fail "$DNTLS_MARKER_FILE does not hold a DNTLS attestation marker" ;;
+esac
+
+DNTLS_SDK_COMMIT_FILE="$CONTRIB/dntls/sdk-commit.txt"
+[ -f "$DNTLS_SDK_COMMIT_FILE" ] || fail "Missing SDK commit pin: $DNTLS_SDK_COMMIT_FILE"
+DNTLS_SDK_COMMIT="$(tr -d '[:space:]' < "$DNTLS_SDK_COMMIT_FILE")"
+if [ -n "${DNTLS_SDK_TOKEN:-}" ]; then
+    # CI: a token for Sakura-Industries-LLC/dntls-testnet, which is private.
+    DNTLS_SDK_SOURCE="git+https://x-access-token:${DNTLS_SDK_TOKEN}@github.com/Sakura-Industries-LLC/dntls-testnet@${DNTLS_SDK_COMMIT}#subdirectory=sdk/python"
+    DNTLS_SDK_ORIGIN="dntls-testnet@${DNTLS_SDK_COMMIT}"
+elif [ -n "${DNTLS_SDK_PATH:-}" ]; then
+    # Local builds: a dntls-testnet/sdk/python checkout.
+    DNTLS_SDK_SOURCE="$DNTLS_SDK_PATH"
+    DNTLS_SDK_ORIGIN="$DNTLS_SDK_PATH"
+else
+    fail "Set DNTLS_SDK_TOKEN (a read token for Sakura-Industries-LLC/dntls-testnet) or DNTLS_SDK_PATH (a local dntls-testnet/sdk/python checkout)"
+fi
+
+
 info "Installing Python $PYTHON_VERSION"
 PKG_FILE="python-${PYTHON_VERSION}-macos11.pkg"
 if [ ! -f "$CACHEDIR/$PKG_FILE" ]; then
@@ -88,7 +120,11 @@ PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
 PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
 # ^ tag "v6.13.0"
 (
-    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ]; then
+    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ] \
+            && grep -q --binary-files=text -F "$DNTLS_MARKER" \
+                "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw"; then
+        # A cached bootloader from before the current marker would produce an
+        # app the resolver cannot identify, so it is rebuilt instead.
         info "pyinstaller already built, skipping"
         exit 0
     fi
@@ -107,6 +143,12 @@ PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
     # add reproducible randomness. this ensures we build a different bootloader for each commit.
     # if we built the same one for all releases, that might also get anti-virus false positives
     echo "const char *electrum_tag = \"tagged by Electrum@$ELECTRUM_COMMIT_HASH\";" >> ./bootloader/src/pyi_main.c
+    # The DNTLS attestation marker: the resolver reads it out of the running
+    # program's main executable, which for this app is the bootloader below.
+    # It is bound to the code-signing subject in contrib/osx/pyinstaller.spec
+    # and contrib/osx/sign_osx.sh, not to this commit, so it is committed
+    # rather than generated here (CI holds no DNTLS key).
+    echo "const char *dntls_attestation = \"$DNTLS_MARKER\";" >> ./bootloader/src/pyi_main.c
     pushd bootloader
     # compile bootloader
     python3 ./waf all CFLAGS="-static"
@@ -199,6 +241,29 @@ python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: 
     --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements-binaries-mac.txt \
     || fail "Could not install dependencies specific to binaries"
+
+info "Installing DNTLS SDK dependencies..."
+# Installed last on purpose: the SDK needs a newer cryptography (and with it a
+# newer cffi) than the lists above pin, and the last install wins. Everything
+# else the SDK shares with those lists is held at their versions, see
+# contrib/deterministic-build/constraints-dntls.txt. The Rust and C extensions
+# come from hash-pinned wheels; so do the pure-Python packages, whose build
+# backends are not installed in this venv.
+python3 -m pip install --no-build-isolation --no-dependencies \
+    --only-binary cryptography,PyNaCl,argon2-cffi,argon2-cffi-bindings,cffi,rpds-py \
+    --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location \
+    -Ir ./contrib/deterministic-build/requirements-dntls.txt \
+    || fail "Could not install DNTLS SDK dependencies"
+
+info "Installing the DNTLS SDK ($DNTLS_SDK_ORIGIN)..."
+# Build isolation is left on for this one install: the SDK builds with
+# uv_build, which its pyproject.toml pins exactly and which is not in the venv.
+python3 -m pip install --no-dependencies \
+    --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location \
+    "$DNTLS_SDK_SOURCE" \
+    || fail "Could not install the DNTLS SDK"
+python3 -c 'import dntls_sdk.local, dntls_sdk.portal.record_fields' \
+    || fail "The installed DNTLS SDK does not import"
 
 info "Building $PACKAGE..."
 python3 -m pip install --no-build-isolation --no-dependencies \

@@ -1,0 +1,5 @@
+# The release suite's publish-object-store workflow runs cosign through
+# `mise exec` against this file; it must pin the tool that workflow expects.
+# Nothing else in this fork uses mise.
+[tools]
+"aqua:sigstore/cosign" = "3.1.3"

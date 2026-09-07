@@ -1,0 +1,7 @@
+# Packages that the DNTLS SDK shares with the upstream requirement lists and
+# that must not move when requirements-dntls.txt is installed on top of them.
+# Used only when regenerating requirements-dntls.txt; the build does not read
+# this file.
+attrs==22.2.0
+certifi==2025.4.26
+idna==3.10

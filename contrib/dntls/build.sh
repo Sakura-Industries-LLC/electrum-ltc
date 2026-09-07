@@ -17,7 +17,9 @@
 #   DNTLS_PROGRAM_DATA_DIR data dir holding the program's identity (default:
 #                          ~/tmp/electrum-dntls-data)
 #   DNTLS_SDK_PATH         path to dntls-testnet/sdk/python (default: sibling
-#                          checkout at ../../../testnet/sdk/python)
+#                          checkout at ../../../testnet/sdk/python, or, when
+#                          that is absent, the commit pinned in
+#                          contrib/dntls/sdk-commit.txt fetched from GitHub)
 #   SIGN_IDENTIFIER        codesign identifier (default: net.dntls.electrum-ltc)
 set -eu
 
@@ -29,6 +31,7 @@ python="${PYTHON:-python3.12}"
 dntls="${DNTLS_CLI:-dntls}"
 program_data="${DNTLS_PROGRAM_DATA_DIR:-$HOME/tmp/electrum-dntls-data}"
 sdk="${DNTLS_SDK_PATH:-$root/../testnet/sdk/python}"
+sdk_commit="$(tr -d '[:space:]' < "$here/sdk-commit.txt")"
 identifier="${SIGN_IDENTIFIER:-net.dntls.electrum-ltc}"
 
 [ -f "$ca/cn.txt" ] || { echo "no signing identity; run contrib/dntls/signing-identity.sh first" >&2; exit 1; }
@@ -44,7 +47,14 @@ echo "==> virtual environment"
 [ -d "$venv" ] || "$python" -m venv "$venv"
 "$venv/bin/pip" install -q --upgrade pip
 ELECTRUM_ECC_DONT_COMPILE=1 "$venv/bin/pip" install -q "$root[gui,crypto]"
-"$venv/bin/pip" install -q -e "$sdk"
+if [ -d "$sdk" ]; then
+  "$venv/bin/pip" install -q -e "$sdk"
+else
+  # No sibling checkout: take the same commit the release build uses. This
+  # needs read access to the private dntls-testnet repository.
+  "$venv/bin/pip" install -q \
+    "git+ssh://git@github.com/Sakura-Industries-LLC/dntls-testnet@${sdk_commit}#subdirectory=sdk/python"
+fi
 
 echo "==> libsecp256k1"
 # electrum-ecc 0.0.7 looks for ABI versions <= 6 next to itself; Homebrew's

@@ -25,6 +25,11 @@ block_cipher = None
 # see https://github.com/pyinstaller/pyinstaller/issues/2005
 hiddenimports = []
 hiddenimports += collect_submodules(f"{PYPKG}.plugins")
+# The "dntls" plugin imports the DNTLS SDK, which the analysis cannot see
+# through the plugin loader. The SDK is pure Python; its record schema is
+# package data read from a path next to its __init__, and jsonschema keeps its
+# metaschemas as package data in jsonschema_specifications.
+hiddenimports += collect_submodules("dntls_sdk")
 
 
 binaries = []
@@ -46,6 +51,8 @@ datas = [
     (f"{PROJECT_ROOT}/{PYPKG}/gui/fonts", f"{PYPKG}/gui/fonts"),
 ]
 datas += collect_data_files(f"{PYPKG}.plugins")
+datas += collect_data_files("dntls_sdk")
+datas += collect_data_files("jsonschema_specifications")
 datas += collect_data_files('trezorlib')  # TODO is this needed? and same question for other hww libs
 datas += collect_data_files('safetlib')
 datas += collect_data_files('ckcc')
@@ -132,7 +139,9 @@ app = BUNDLE(
     version=VERSION,
     name=PACKAGE_NAME,
     icon=ICONS_FILE,
-    bundle_identifier=None,
+    # The Local Trust Resolver identifies this app by (Team ID, signing
+    # identifier); codesign takes the identifier from here.
+    bundle_identifier="net.dntls.electrum-ltc",
     info_plist={
         'NSHighResolutionCapable': 'True',
         'NSSupportsAutomaticGraphicsSwitching': 'True',
