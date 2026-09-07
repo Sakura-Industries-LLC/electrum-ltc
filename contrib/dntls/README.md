@@ -86,7 +86,7 @@ Move both together.
 
 `attestation.marker` is the marker the release build compiles into the
 PyInstaller bootloader, which is the shipped app's main executable
-(`Electrum-LTC.app/Contents/MacOS/Electrum-LTC`). It was minted offline with
+(`Electrum-LTC.app/Contents/MacOS/run_electrum` (PyInstaller names it after the entry script)). It was minted offline with
 `dntls attest macos --identifier net.dntls.electrum-ltc` against a binary
 signed by the org's Developer ID Application certificate, so it binds the name
 `electrum-ltc.dntls` to the signer subject (Team ID `7MN6B2QY4W`, signing

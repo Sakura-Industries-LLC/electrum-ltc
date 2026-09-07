@@ -234,7 +234,8 @@ jobs:
           spctl --assess --type execute --verbose=4 "$APP"
           xcrun stapler validate "$APP"
 
-          exe="${APP}/Contents/MacOS/Electrum-LTC"
+          # PyInstaller names the executable after the EXE() target, not the bundle.
+          exe="${APP}/Contents/MacOS/$(defaults read "$PWD/${APP}/Contents/Info.plist" CFBundleExecutable)"
           test -f "$exe" || { echo "::error::${exe} is missing"; exit 1; }
           markers="$(grep -o --binary-files=text 'DNTLS-ATTEST-BEGIN' "$exe" | wc -l | tr -d ' ')"
           if [[ "$markers" != "1" ]]; then
