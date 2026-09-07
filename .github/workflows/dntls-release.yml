@@ -175,6 +175,13 @@ jobs:
             echo "password=$password"
           } >> "$GITHUB_OUTPUT"
 
+      # contrib/make_mwebd.sh compiles libmwebd (Go, c-shared); the runner's Go
+      # is not on PATH for that script.
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: contrib/mwebd/go.mod
+          cache-dependency-path: contrib/mwebd/go.sum
+
       - name: Build the app
         env:
           # make_osx.sh installs the SDK from git at the commit pinned in
