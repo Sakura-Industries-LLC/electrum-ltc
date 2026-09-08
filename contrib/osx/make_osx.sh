@@ -33,22 +33,9 @@ which brew > /dev/null 2>&1 || fail "Please install brew from https://brew.sh/ t
 which xcodebuild > /dev/null 2>&1 || fail "Please install xcode command line tools to continue"
 
 
-# DNTLS: the Local Trust Resolver identifies this build by its code-signing
-# subject (Team ID + identifier) together with the attestation marker that gets
-# compiled into the PyInstaller bootloader below, and the "dntls" plugin needs
-# the DNTLS Python SDK inside the bundle. Resolve both now, so a misconfigured
-# build fails in seconds instead of after the compile.
-DNTLS_MARKER_FILE="$CONTRIB/dntls/attestation.marker"
-[ -f "$DNTLS_MARKER_FILE" ] || fail "Missing attestation marker: $DNTLS_MARKER_FILE"
-DNTLS_MARKER_LINES="$(grep -c '' "$DNTLS_MARKER_FILE" || true)"
-[ "$DNTLS_MARKER_LINES" = "1" ] \
-    || fail "$DNTLS_MARKER_FILE must hold exactly one line, found $DNTLS_MARKER_LINES"
-DNTLS_MARKER="$(tr -d '\n' < "$DNTLS_MARKER_FILE")"
-case "$DNTLS_MARKER" in
-    DNTLS-ATTEST-BEGIN*DNTLS-ATTEST-END) ;;
-    *) fail "$DNTLS_MARKER_FILE does not hold a DNTLS attestation marker" ;;
-esac
-
+# DNTLS: the "dntls" plugin needs the DNTLS Python SDK inside the bundle.
+# Resolve its source now, so a misconfigured build fails in seconds instead
+# of after the compile.
 DNTLS_SDK_COMMIT_FILE="$CONTRIB/dntls/sdk-commit.txt"
 [ -f "$DNTLS_SDK_COMMIT_FILE" ] || fail "Missing SDK commit pin: $DNTLS_SDK_COMMIT_FILE"
 DNTLS_SDK_COMMIT="$(tr -d '[:space:]' < "$DNTLS_SDK_COMMIT_FILE")"
@@ -120,11 +107,7 @@ PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
 PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
 # ^ tag "v6.13.0"
 (
-    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ] \
-            && grep -q --binary-files=text -F "$DNTLS_MARKER" \
-                "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw"; then
-        # A cached bootloader from before the current marker would produce an
-        # app the resolver cannot identify, so it is rebuilt instead.
+    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ]; then
         info "pyinstaller already built, skipping"
         exit 0
     fi
@@ -143,12 +126,6 @@ PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
     # add reproducible randomness. this ensures we build a different bootloader for each commit.
     # if we built the same one for all releases, that might also get anti-virus false positives
     echo "const char *electrum_tag = \"tagged by Electrum@$ELECTRUM_COMMIT_HASH\";" >> ./bootloader/src/pyi_main.c
-    # The DNTLS attestation marker: the resolver reads it out of the running
-    # program's main executable, which for this app is the bootloader below.
-    # It is bound to the code-signing subject in contrib/osx/pyinstaller.spec
-    # and contrib/osx/sign_osx.sh, not to this commit, so it is committed
-    # rather than generated here (CI holds no DNTLS key).
-    echo "const char *dntls_attestation = \"$DNTLS_MARKER\";" >> ./bootloader/src/pyi_main.c
     pushd bootloader
     # compile bootloader
     python3 ./waf all CFLAGS="-static"

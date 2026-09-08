@@ -1,47 +1,26 @@
 #!/bin/sh
-# Build the attested Electrum-LTC launcher for the DNTLS demo (macOS).
+# Set up a development environment for the DNTLS build of Electrum-LTC (macOS).
 #
-# Produces contrib/dntls/venv/bin/electrum-dntls: a code-signed launcher that
-# embeds CPython and carries a DNTLS program attestation for the name in
-# DNTLS_PROGRAM_DATA_DIR (default: electrum-ltc.dntls). Run the wallet with
-# contrib/dntls/run.sh.
-#
-# Steps: create the venv and install Electrum-LTC with its GUI deps, place a
-# loadable libsecp256k1, install the DNTLS Python SDK, then build the launcher
-# twice: a provisional signed image is measured by `dntls attest macos`, and
-# the marker it prints is compiled into the final image, which is signed again.
+# Produces contrib/dntls/venv with Electrum-LTC, its GUI dependencies, a
+# loadable libsecp256k1, libmwebd, and the DNTLS Python SDK. Run the app with
+# contrib/dntls/run.sh. The Local Trust Resolver identifies the app by
+# registration (a confirmation code the user approves), so nothing here is
+# signed; the release build in .github/workflows/dntls-release.yml is.
 #
 # Environment:
-#   PYTHON                 CPython 3.12 with a shared libpython (default: python3.12)
-#   DNTLS_CLI              dntls CLI with `attest` (default: dntls)
-#   DNTLS_PROGRAM_DATA_DIR data dir holding the program's identity (default:
-#                          ~/tmp/electrum-dntls-data)
-#   DNTLS_SDK_PATH         path to dntls-testnet/sdk/python (default: sibling
-#                          checkout at ../../../testnet/sdk/python, or, when
-#                          that is absent, the commit pinned in
-#                          contrib/dntls/sdk-commit.txt fetched from GitHub)
-#   SIGN_IDENTIFIER        codesign identifier (default: net.dntls.electrum-ltc)
+#   PYTHON          CPython 3.12 (default: python3.12)
+#   DNTLS_SDK_PATH  path to dntls-testnet/sdk/python (default: sibling checkout
+#                   at ../../../testnet/sdk/python, or, when that is absent,
+#                   the commit pinned in contrib/dntls/sdk-commit.txt fetched
+#                   from GitHub)
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 venv="$here/venv"
-ca="$here/ca"
 python="${PYTHON:-python3.12}"
-dntls="${DNTLS_CLI:-dntls}"
-program_data="${DNTLS_PROGRAM_DATA_DIR:-$HOME/tmp/electrum-dntls-data}"
 sdk="${DNTLS_SDK_PATH:-$root/../testnet/sdk/python}"
 sdk_commit="$(tr -d '[:space:]' < "$here/sdk-commit.txt")"
-identifier="${SIGN_IDENTIFIER:-net.dntls.electrum-ltc}"
-
-[ -f "$ca/cn.txt" ] || { echo "no signing identity; run contrib/dntls/signing-identity.sh first" >&2; exit 1; }
-cn="$(cat "$ca/cn.txt")"
-keychain="$(cat "$ca/keychain.txt")"
-security unlock-keychain -p "$(cat "$ca/password.txt")" "$keychain"
-
-prefix="$("$python" -c 'import sys; print(sys.prefix)')"
-pyver="$("$python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
-[ -f "$prefix/lib/libpython$pyver.dylib" ] || { echo "$python has no shared libpython (build CPython with --enable-shared)" >&2; exit 1; }
 
 echo "==> virtual environment"
 [ -d "$venv" ] || "$python" -m venv "$venv"
@@ -72,36 +51,5 @@ if [ ! -f "$root/electrum/libmwebd.0.dylib" ]; then
   (cd "$root/contrib/mwebd" && CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-s -w" -o "$root/electrum/libmwebd.0.dylib" .)
 fi
 
-build() {
-  # build DEST [MARKER]
-  if [ -n "${2:-}" ]; then
-    set -- "$1" "-DDNTLS_MARKER=\"$2\""
-  else
-    set -- "$1" "-DDNTLS_MARKER=\"unset\""
-  fi
-  clang -O1 -o "$1" "$here/launcher.c" \
-    -I"$prefix/include/python$pyver" \
-    -L"$prefix/lib" "-lpython$pyver" -ldl \
-    -Wl,-rpath,"$prefix/lib" -framework CoreFoundation \
-    "$2"
-  # No hardened runtime: library validation would reject libpython and the
-  # PyQt extension modules, which are signed by other parties.
-  codesign -f -s "$cn" --keychain "$keychain" -i "$identifier" --timestamp=none "$1"
-}
-
-echo "==> provisional launcher"
-tmp="$(mktemp -d)"
-build "$tmp/launcher"
-
-echo "==> attestation"
-marker="$("$dntls" --data-dir "$program_data" attest macos "$tmp/launcher" \
-  | "$venv/bin/python" -c 'import json, sys; print(json.load(sys.stdin)["marker"])')"
-[ -n "$marker" ] || { echo "attest printed no marker" >&2; exit 1; }
-
-echo "==> attested launcher"
-build "$venv/bin/electrum-dntls" "$marker"
-rm -rf "$tmp"
-
-"$venv/bin/electrum-dntls" -c 'import sys, electrum, dntls_sdk; print("python", sys.version.split()[0], "electrum", electrum.version.ELECTRUM_VERSION, "at", sys.executable)'
-codesign -dv "$venv/bin/electrum-dntls" 2>&1 | sed -n '/^Identifier=/p'
-echo "built $venv/bin/electrum-dntls"
+"$venv/bin/python" -c 'import sys, electrum, dntls_sdk; print("python", sys.version.split()[0], "electrum", electrum.version.ELECTRUM_VERSION)'
+echo "ready: contrib/dntls/run.sh"

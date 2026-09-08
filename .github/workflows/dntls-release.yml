@@ -9,11 +9,10 @@ name: DNTLS Release
 # Local Trust Resolver over its Unix socket, and the resolver has no Windows
 # build; the runner image for macOS x86_64 is retired.
 #
-# The Local Trust Resolver identifies the shipped app by its code-signing
-# subject (Team ID 7MN6B2QY4W + identifier net.dntls.electrum-ltc) plus the
-# attestation marker committed at contrib/dntls/attestation.marker, which
-# contrib/osx/make_osx.sh compiles into the PyInstaller bootloader. CI holds no
-# DNTLS key, so the marker cannot be minted here; it is verified instead.
+# The Local Trust Resolver identifies the shipped app by registration (a
+# confirmation code the user approves), not by its signature. Developer ID
+# signing still matters: the resolver's registration prompt names a recognized
+# signer, and Gatekeeper accepts the notarized app without a right-click.
 
 on:
   workflow_dispatch:
@@ -219,9 +218,9 @@ jobs:
           rm -f "$zip"
           xcrun stapler staple "$APP"
 
-      # A signing change or a duplicated marker would leave the shipped app
-      # unable to identify itself to the Local Trust Resolver, which is a silent
-      # failure for the user, so both are checked before anything is uploaded.
+      # A signing change would surface in the resolver's registration prompt as
+      # an unrecognized signer and trip Gatekeeper, so it is checked before
+      # anything is uploaded.
       - name: Verify the signed app
         run: |
           set -euo pipefail
@@ -233,21 +232,6 @@ jobs:
           grep -qx 'TeamIdentifier=7MN6B2QY4W' <<< "$signature"
           spctl --assess --type execute --verbose=4 "$APP"
           xcrun stapler validate "$APP"
-
-          # PyInstaller names the executable after the EXE() target, not the bundle.
-          exe="${APP}/Contents/MacOS/$(defaults read "$PWD/${APP}/Contents/Info.plist" CFBundleExecutable)"
-          test -f "$exe" || { echo "::error::${exe} is missing"; exit 1; }
-          markers="$(grep -o --binary-files=text 'DNTLS-ATTEST-BEGIN' "$exe" | wc -l | tr -d ' ')"
-          if [[ "$markers" != "1" ]]; then
-            echo "::error::Expected exactly one DNTLS attestation marker in the main executable, found ${markers}."
-            exit 1
-          fi
-          grep -q --binary-files=text -F "$(tr -d '\n' < contrib/dntls/attestation.marker)" "$exe"
-          elsewhere="$(grep -rl --binary-files=text 'DNTLS-ATTEST-BEGIN' "$APP" | grep -vx "$exe" || true)"
-          if [[ -n "$elsewhere" ]]; then
-            echo "::error::DNTLS attestation marker also appears in: ${elsewhere}"
-            exit 1
-          fi
 
       - name: Build, sign and notarize the disk image
         env:

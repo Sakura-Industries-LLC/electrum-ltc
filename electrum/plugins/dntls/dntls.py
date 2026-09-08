@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Iterable, Optional
+import os
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
-from dntls_sdk.local import Client, ProposeChangeRequest, RecordChange
+from dntls_sdk.local import Client, FileCredentials, ProposeChangeRequest, RecordChange
 from dntls_sdk.local.errors import LocalError
 from dntls_sdk.portal.record_fields import RecordFields
 
@@ -13,13 +14,25 @@ from electrum import bitcoin
 from electrum.plugin import BasePlugin, hook
 
 if TYPE_CHECKING:
+    from electrum.simple_config import SimpleConfig
     from electrum.wallet import Abstract_Wallet
     from dntls_sdk.local import Identity
 
 
-def _client() -> Client:
+def _client(
+    config: Optional['SimpleConfig'] = None,
+    on_register: Optional[Callable[[str], None]] = None,
+) -> Client:
     """Return a Local Trust Resolver client."""
-    return Client()
+    if config is None:
+        return Client()
+    return Client(
+        program='Electrum-LTC',
+        credentials=FileCredentials(
+            os.path.join(config.electrum_path(), 'dntls-resolver.token'),
+        ),
+        on_register=on_register,
+    )
 
 
 def merge_payment_addresses(current: Optional[Iterable[dict]], address: str) -> list[dict]:
@@ -84,15 +97,16 @@ class DntlsPlugin(BasePlugin):
             'type': 'dntls',
         }
 
-    def list_identities(self) -> list[Identity]:
+    def list_identities(self, on_register: Optional[Callable[[str], None]] = None) -> list[Identity]:
         """Return stored identities that can publish a record."""
-        return [item for item in _client().identities() if item.has_private_identity]
+        return [item for item in _client(self.config, on_register).identities() if item.has_private_identity]
 
     def publish_address(
         self,
         wallet: 'Abstract_Wallet',
         identity_name: str,
         fqdn: Optional[str] = None,
+        on_register: Optional[Callable[[str], None]] = None,
     ) -> RecordChange:
         """Publish this wallet's receive address onto the named identity.
 
@@ -107,7 +121,7 @@ class DntlsPlugin(BasePlugin):
                 raise Exception('This wallet has no receive address.')
             address = receiving[0]
         record_name = fqdn or identity_name
-        client = _client()
+        client = _client(self.config, on_register)
         fields = _record_fields(client.resolve_record(record_name))
         current = [item.to_dict() for item in (fields.payment_addresses or ())]
         replacement = merge_payment_addresses(current, address)

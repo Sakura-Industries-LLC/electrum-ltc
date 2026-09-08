@@ -1,9 +1,12 @@
 import json
+import os
 from unittest.mock import patch
 
+from dntls_sdk.local.client import CODE_ALPHABET, CODE_LENGTH, new_code
 from dntls_sdk.local.errors import LocalError
 
-from electrum.plugins.dntls.dntls import DntlsPlugin, merge_payment_addresses
+from electrum.plugins.dntls.dntls import DntlsPlugin, merge_payment_addresses, _client
+from electrum.simple_config import SimpleConfig
 
 from . import ElectrumTestCase
 
@@ -41,7 +44,11 @@ class TestDntlsPlugin(ElectrumTestCase):
 
     def setUp(self):
         super().setUp()
-        self.plugin = DntlsPlugin(None, None, 'dntls')
+        self.config = SimpleConfig({
+            'electrum_path': self.electrum_path,
+            'testnet': True,
+        })
+        self.plugin = DntlsPlugin(None, self.config, 'dntls')
 
     def test_merge_replaces_litecoin_entry(self):
         current = [
@@ -109,3 +116,33 @@ class TestDntlsPlugin(ElectrumTestCase):
         stub = _StubClient(error=LocalError('local: request /v1/resolve'))
         with patch('electrum.plugins.dntls.dntls._client', return_value=stub):
             self.assertIsNone(self.plugin.resolve_dntls('whoami.dntls'))
+
+    def test_registering_client_credential_path_under_electrum_path(self):
+        captured = {}
+
+        class StubClient:
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+
+        with patch('electrum.plugins.dntls.dntls.Client', StubClient):
+            _client(self.config, on_register=lambda code: None)
+        path = os.fspath(captured['credentials'].path)
+        electrum_path = self.config.electrum_path()
+        self.assertTrue(path.startswith(electrum_path + os.sep))
+        self.assertEqual('dntls-resolver.token', os.path.basename(path))
+
+    def test_on_register_receives_confirmation_code(self):
+        seen = []
+
+        class StubClient:
+            def __init__(self, *args, **kwargs):
+                on_register = kwargs.get('on_register')
+                if on_register is not None:
+                    on_register(new_code())
+
+        with patch('electrum.plugins.dntls.dntls.Client', StubClient):
+            _client(self.config, on_register=seen.append)
+        self.assertEqual(1, len(seen))
+        code = seen[0]
+        self.assertEqual(CODE_LENGTH, len(code))
+        self.assertTrue(all(ch in CODE_ALPHABET for ch in code))
