@@ -51,7 +51,7 @@ signs it with the org's Developer ID certificate through
 notarizes and staples both the app and the disk image, checks the signature,
 signs the checksums with keyless cosign, and hands the bundle to the release
 suite's `publish-object-store` workflow. The Portal's Downloads page then
-offers `electrum-ltc-dntls_<version>_macos_arm64.dmg` to signed-in testnet
+offers `electrum-ltc-dntls_<version>_darwin_arm64.dmg` to signed-in testnet
 users. Prerelease versions are refused by the publisher, so a tag such as
 `electrum-dntls/v0.2.0-rc.1` rehearses everything except the upload.
 
