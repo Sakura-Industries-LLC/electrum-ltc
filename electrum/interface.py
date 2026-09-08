@@ -1400,10 +1400,21 @@ class Interface(Logger):
         if any(DummyAddress.is_dummy_address(txout.address) for txout in tx.outputs()):
             raise DummyAddressUsedInTxException("tried to broadcast tx with dummy address!")
         try:
-            stub = mwebd.stub_async()
-            resp = await stub.Broadcast(BroadcastRequest(raw_tx=bfh(rawtx)))
-            tx._cached_txid = resp.txid
-            out = txid_calc = resp.txid
+            try:
+                stub = mwebd.stub_async()
+                resp = await stub.Broadcast(BroadcastRequest(raw_tx=bfh(rawtx)))
+                # mwebd finalizes the transaction, so its txid is authoritative.
+                out = txid_calc = resp.txid
+            except grpc.aio._call.AioRpcError as e:
+                # mwebd announces the transaction to Litecoin peers itself. When it
+                # has none yet (fresh start, sparse testnet) the announcement finds
+                # nobody; the Electrum server still relays plain transactions, and
+                # its answer is checked against the locally computed txid.
+                if 'no peers replied' not in (e.details() or ''):
+                    raise
+                self.logger.info(f"mwebd had no peers for broadcast; falling back to the server. tx={str(tx)}")
+                out = await self.session.send_request('blockchain.transaction.broadcast', [rawtx], timeout=timeout)
+            tx._cached_txid = out
         except (RequestTimedOut, asyncio.CancelledError, asyncio.TimeoutError):
             raise  # pass-through
         except aiorpcx.jsonrpc.CodeMessageError as e:

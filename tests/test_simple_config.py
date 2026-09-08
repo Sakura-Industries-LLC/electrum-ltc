@@ -101,7 +101,9 @@ class Test_SimpleConfig(ElectrumTestCase):
         """The user config does not contain command-line options when saved."""
         fake_read_user = lambda _: {"something": "a"}
         read_user_dir = lambda : self.user_dir
-        self.options.update({"something": "c"})
+        # The DNTLS build defaults to testnet; this test reads the mainnet
+        # layout, where the config file sits at the top of the data directory.
+        self.options.update({"something": "c", "mainnet": True})
         config = SimpleConfig(options=self.options,
                               read_user_config_function=fake_read_user,
                               read_user_dir_function=read_user_dir)
