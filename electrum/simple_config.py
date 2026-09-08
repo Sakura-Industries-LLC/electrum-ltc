@@ -254,7 +254,9 @@ class SimpleConfig(Logger):
         if selected_chains:
             # note: if multiple are selected, we just pick one deterministically random
             return selected_chains[0]
-        return constants.BitcoinMainnet
+        # DNTLS build: the demo runs on Litecoin testnet, where the names it
+        # pays publish testnet addresses. `--mainnet` selects mainnet explicitly.
+        return constants.BitcoinTestnet
 
     def electrum_path(self):
         path = self.electrum_path_root()
