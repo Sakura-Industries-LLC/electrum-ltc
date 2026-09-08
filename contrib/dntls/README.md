@@ -69,7 +69,7 @@ signs it with the org's Developer ID certificate through
 image, checks the signature and the attestation marker, signs the checksums
 with keyless cosign, and hands the bundle to the release suite's
 `publish-object-store` workflow. The Portal's Downloads page then offers
-`electrum-ltc-dntls_<version>_macos_arm64.dmg` to signed-in testnet users.
+`electrum-ltc-dntls_<version>_darwin_arm64.dmg` to signed-in testnet users.
 Prerelease versions are refused by the publisher.
 
 Rehearse without publishing by dispatching the workflow ("Run workflow") with

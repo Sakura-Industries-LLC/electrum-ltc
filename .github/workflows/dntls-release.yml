@@ -257,7 +257,7 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: |
           set -euo pipefail
-          dmg="dist/electrum-ltc-dntls_${VERSION}_macos_arm64.dmg"
+          dmg="dist/electrum-ltc-dntls_${VERSION}_darwin_arm64.dmg"
           # Same image format upstream's contrib/osx/sign_osx.sh produces.
           hdiutil create -fs HFS+ -volname Electrum-LTC -srcfolder "$APP" "$dmg"
           codesign -f -v -s "$CODESIGN_CERT" "$dmg"
@@ -318,7 +318,7 @@ jobs:
           set -euo pipefail
           cd dist
           shopt -s nullglob dotglob
-          expected="electrum-ltc-dntls_${VERSION}_macos_arm64.dmg"
+          expected="electrum-ltc-dntls_${VERSION}_darwin_arm64.dmg"
           if [[ ! -f "$expected" ]]; then
             echo "::error::Missing ${expected}; the macOS job produced: $(printf '%s ' *)"
             exit 1
